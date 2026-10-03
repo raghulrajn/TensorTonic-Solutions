@@ -3,45 +3,74 @@
 #define TILE_DIM 16
 
 __global__ void tiled_matmul_kernel(const float* A, const float* B, float* C, int M, int N, int K) {
-    __shared__ float shared_A[TILE_DIM][TILE_DIM];
-    __shared__ float shared_B[TILE_DIM][TILE_DIM];
+    __shared__ float As[2][TILE_DIM][TILE_DIM];
+    __shared__ float Bs[2][TILE_DIM][TILE_DIM];
 
     int bx = blockIdx.x;
     int by = blockIdx.y;
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
-
+    int buf = 0;
     int row = by*blockDim.y + ty;
     int col = bx*blockDim.x + tx;
-    float Cvalue = 0.0f;
+    float acc = 0.0f;
       int num_tiles = (K + TILE_DIM - 1) / TILE_DIM;
 
-    for (int m = 0; m < num_tiles; ++m)
+   int A_col = tx;
+    int B_row = ty;
+
+    if (row < M && A_col < K)
+        As[0][ty][tx] = A[row * K + A_col];
+    else
+        As[0][ty][tx] = 0.0f;
+
+    if (B_row < K && col < N)
+        Bs[0][ty][tx] = B[B_row * N + col];
+    else
+        Bs[0][ty][tx] = 0.0f;
+
+    __syncthreads();
+
+    for (int t = 0; t < num_tiles; ++t)
     {
-        int A_col = m * TILE_DIM + tx;
-        int B_row = m * TILE_DIM + ty;
+        int next = buf ^ 1;
+        if (t + 1 < num_tiles)
+        {
+            int next_A_col = (t + 1) * TILE_DIM + tx;
+            int next_B_row = (t + 1) * TILE_DIM + ty;
 
-        if (row < M && A_col < K)
-            shared_A[ty][tx] = A[row * K + A_col];
-        else
-            shared_A[ty][tx] = 0.0f;
-        if (B_row < K && col < N)
-            shared_B[ty][tx] = B[B_row * N + col];
-        else
-            shared_B[ty][tx] = 0.0f;
+            if (row < M && next_A_col < K)
+            {
+                As[next][ty][tx] =A[row * K + next_A_col];
+            }
+            else
+            {
+                As[next][ty][tx] = 0.0f;
+            }
 
-        __syncthreads();
+            if (next_B_row < K && col < N)
+            {
+                Bs[next][ty][tx] = B[next_B_row * N + col];
+            }
+            else
+            {
+                Bs[next][ty][tx] = 0.0f;
+            }
+        }
+
         for (int k = 0; k < TILE_DIM; ++k)
         {
-            Cvalue += shared_A[ty][k] * shared_B[k][tx];
+            acc +=As[buf][ty][k] *Bs[buf][k][tx];
         }
 
         __syncthreads();
+
+        buf = next;
     }
     if (row < M && col < N)
     {
-        C[row * N + col] = Cvalue;
+        C[row * N + col] = acc;
     }
 }
 
